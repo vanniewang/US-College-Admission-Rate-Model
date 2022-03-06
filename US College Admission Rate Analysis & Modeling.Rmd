@@ -1,0 +1,285 @@
+---
+title: "VideoProject"
+author: 
+Nanyi Wang [1005730345]
+Shiyun Cheng [1006727614]
+output: 
+  pdf_document: 
+    latex_engine: xelatex
+---
+
+```{r setup} 
+knitr::opts_chunk$set(warning = FALSE, message = FALSE) 
+```
+
+```{r}
+library(car)
+library(psych)
+library(tidyr)
+library(ggplot2)
+library(reshape2)
+library(dplyr)
+```
+
+## Data Processing
+
+Before fitting the model, we need to first examine all variables.
+Since the information for variable REGION is already included in other numerical variables (POVERTY_RATE, UNEMP_RATE, and UG24ABV(percentage of undergrads)) and REGION has 10 levels, for simplicity purpose, we will not be using this variable in our analysis. Similarly, STABBR, the state postcode or the state information is included in other variables and has too many levels.
+Moreover, INSTNM (actual name of institution) is also included in other variables (i.e. PBI, TRIBAL, HSI etc.)
+
+Thus, we will not be focusing on variables REGION, STABBR, and INSTNM in our present analysis.
+
+
+```{r}
+# load the csv
+
+data = read.csv("~/Desktop/Video_project_dataset.csv")
+sapply(data, typeof)
+drops <- c("X","UNITID","INSTNM", "STABBR")
+data = data[ , !(names(data) %in% drops)]
+# drop UNITID and INSTNM
+
+one_hot_encoding = function(df, columns){
+  # create a copy of the original data.frame for not modifying the original
+  df = cbind(df)
+  # convert the columns to vector in case it is a string
+  columns = c(columns)
+  # for each variable perform the One hot encoding
+  for (column in columns){
+    unique_values = sort(unique(df[column])[,column])
+    # non_reference_values  = unique_values[c(-1)] # the first element is going 
+                                                 # to be the reference by default
+    for (value in unique_values){
+      # the new dummy column name
+      new_col_name = paste0(column,'.',value)
+      # create new dummy column for each value of the non_reference_values
+      df[new_col_name] <- with(df, ifelse(df[,column] == value, 1, 0))
+    }
+    # delete the one hot encoded column
+    df[column] = NULL
+
+  }
+  return(df)
+}
+data = one_hot_encoding(data, c('REGION'))
+# split the REGION and STABBR columns to 0-1 value columns
+
+describe(data)
+```
+
+```{r}
+# data = data[data$REGION.1 == 1,]
+```
+
+## Data Summary
+```{r}
+data_reduced = data[,c(1:26)]
+summary(data_reduced)
+```
+
+
+## EDA
+The following figure shows the pairwise correlation of all the numeric variables in the data.
+We could see that some pairs of variables has strong positive correlation, such as 'POVERTY_RATE' and 'UNEMP_RATE'.
+And there are also strong negative correlation, such as 'INC_PCT_LO' and 'MD_FAMINC'.
+However, we could not see obvious correlation between 'ADM_RATE' and other variables, except for 'AVGFACSAL', which has a relatively high negative correlation with 'ADM_RATE'.
+
+
+```{r, fig.width=20, fig.height=20, include=FALSE}
+options(warn=-1)
+#scatterplotMatrix(~ ADM_RATE + NUMBRANCH, data=data)
+pairs.panels(data[,c(8,27:35,1:7,9:24,25,26)], 
+             method = "pearson", # correlation method
+             hist.col = "#00AFBB",
+             density = TRUE,  # show density plots
+             ellipses = TRUE, # show correlation ellipses
+             )
+```
+
+
+
+```{r, fig.width=20, fig.height=20}
+ggplot(gather(data[,c(1:26)]), aes(value)) + 
+    geom_histogram(bins = 10) + 
+    facet_wrap(~key, scales = 'free_x')
+
+```
+
+
+
+We see skews in the variables from the above histograms, indicating we may encounter issue with normality. To verify this, we will build a model and look at residual plots.
+
+
+```{r}
+par(mfrow = c(2, 4))
+hist(data_reduced$ADM_RATE, main = "Histogram of Admission Rate", xlab= "Admission Rate")
+boxplot(data_reduced$ADM_RATE~ data_reduced$CONTROL, main = "Control of Institution", xlab = "Institution Type", ylab = "Admission Rate")
+boxplot(data_reduced$ADM_RATE~ data_reduced$NUMBRANCH, main = "Number of Branch Campuses", xlab = "Number of Branch Campuses", ylab = "Admission Rate")
+boxplot(data_reduced$ADM_RATE~ data_reduced$HBCU, main = "Historically Black College and University", xlab = "Type", ylab = "Admission Rate")
+
+boxplot(data_reduced$ADM_RATE~ data_reduced$PBI, main = "Predominantly Black University", xlab = "Type", ylab = "Admission Rate")
+
+boxplot(data_reduced$ADM_RATE~ data_reduced$HSI, main = "Hispanic-serving Institution", xlab = "Type", ylab = "Admission Rate")
+
+boxplot(data_reduced$ADM_RATE~ data_reduced$TRIBAL, main = "Tribal College and University", xlab = "Type", ylab = "Admission Rate")
+
+boxplot(data_reduced$ADM_RATE~ data_reduced$WOMENONLY, main = "Women-only Institution", xlab = "Type", ylab = "Admission Rate")
+
+```
+### Relationship between 'ADM_RATE' and other variables.
+```{r, fig.width=20, fig.height=20}
+data_reduced = data[,c(1:26)]
+data_reduced.m = melt(data_reduced, id.var="ADM_RATE", variable.name = 'series')
+p = ggplot(data_reduced.m, aes(value, ADM_RATE, colour=series)) +
+  geom_point() +
+  geom_smooth(method="lm", formula=y~x) +
+  facet_wrap(series ~ ., scales = 'free_x')
+p
+```
+
+##Modeling
+
+###Simple Model
+We make simple linear regression on the variables, which is recorded as l1 that included variables (NUMBRANCH + PBI + CONTROL + HBCU + TRIBAL + HSI + WOMENONLY + COSTT4_A + AVGFACSAL + PFTFAC + PCTPELL + UG25ABV + INC_PCT_LO + PAR_ED_PCT_1STGEN + FEMALE + MD_FAMINC + PCT_WHITE + PCT_BLACK + PCT_ASIAN + PCT_HISPANIC + PCT_BA + PCT_GRAD_PROF + PCT_BORN_US + POVERTY_RATE + UNEMP_RATE). 
+
+
+```{r}
+l1 = lm(ADM_RATE ~ NUMBRANCH + PBI + as.factor(CONTROL) + HBCU + TRIBAL + HSI + WOMENONLY + COSTT4_A + AVGFACSAL + PFTFAC + PCTPELL + UG25ABV + INC_PCT_LO + PAR_ED_PCT_1STGEN + FEMALE + MD_FAMINC + PCT_WHITE + PCT_BLACK + PCT_ASIAN + PCT_HISPANIC + PCT_BA + PCT_GRAD_PROF + PCT_BORN_US + POVERTY_RATE + UNEMP_RATE
+, data = data)
+res1 = resid(l1)
+plot(data$ADM_RATE ~ fitted(l1), main="Y versus Y-hat", xlab="Y-hat", ylab="Y")
+abline(a = 0, b = 1)
+lines(lowess(data$ADM_RATE ~ fitted(l1)), lty=2)
+
+par(mfrow = c(1, 2))
+qqnorm(res1)
+qqline(res1)
+hist(res1, main = "Histogram of Residuals of Full-Model")
+```
+
+
+### Selecting Predictors 
+```{r}
+
+summary(l1)
+
+```
+
+Then, we will then drop all non-significant variables and leave significant variables only and make it as our reduced model (l2)
+l2: ADM_RATE ~ NUMBRANCH + CONTROL + HSI + COSTT4_A + AVGFACSAL + PFTFAC + PAR_ED_PCT_1STGEN + FEMALE + MD_FAMINC + PCT_BA + PCT_GRAD_PROF + POVERTY_RATE + UNEMP_RATE + PCT_WHITE 
+
+We will leave PCT_WHITE since its p value is close to 0.05.
+
+
+ 
+```{r}
+l2 = lm(ADM_RATE ~ NUMBRANCH + as.factor(CONTROL) + HSI + COSTT4_A + AVGFACSAL + PFTFAC + PCTPELL + PAR_ED_PCT_1STGEN + FEMALE + MD_FAMINC +  PCT_BA + PCT_GRAD_PROF + POVERTY_RATE + UNEMP_RATE + PCT_WHITE
+, data = data)
+
+summary(l2)
+```
+
+
+We will then dropping all non-significant variables and include the rest in l3  (NUMBRANCH + CONTROL + AVGFACSAL + PFTFAC + PAR_ED_PCT_1STGEN + FEMALE + MD_FAMINC +  PCT_BA + PCT_GRAD_PROF + POVERTY_RATE + UNEMP_RATE + PCT_WHITE)
+
+```{r}
+l3 = lm(ADM_RATE ~ NUMBRANCH + as.factor(CONTROL) + AVGFACSAL + PFTFAC + PAR_ED_PCT_1STGEN + FEMALE + MD_FAMINC +  PCT_BA + PCT_GRAD_PROF + POVERTY_RATE + UNEMP_RATE + PCT_WHITE
+, data = data)
+
+summary(l3)
+```
+
+The overall model is linearly significant. Next, we will be testing out whether or not we should drop these varibles.
+
+
+### Partial F test
+
+We will be using Partial F test to test out whether we should drop the variables.
+$$H_0: \boldsymbol{\beta} = 0 {\ \rm v.s.\ } H_a: \boldsymbol{\beta} \neq 0$$
+
+
+```{r}
+anova(l1, l2)
+anova(l2, l3)
+```
+
+
+###1 l1 vs l2
+Full Model: l1: NUMBRANCH + PBI + CONTROL + HBCU + TRIBAL + HSI + WOMENONLY + COSTT4_A + AVGFACSAL + PFTFAC + PCTPELL + UG25ABV + INC_PCT_LO + PAR_ED_PCT_1STGEN + FEMALE + MD_FAMINC + PCT_WHITE + PCT_BLACK + PCT_ASIAN + PCT_HISPANIC + PCT_BA + PCT_GRAD_PROF + PCT_BORN_US + POVERTY_RATE + UNEMP_RATE
+
+Reduced Model: l2: NUMBRANCH + CONTROL + HSI + COSTT4_A + AVGFACSAL + PFTFAC + PAR_ED_PCT_1STGEN + FEMALE + MD_FAMINC + PCT_BA + PCT_GRAD_PROF + POVERTY_RATE + UNEMP_RATE + PCT_WHITE 
+
+*Removed  {PBI, HBCU, TRIBAL, WOMENONLY, PCTPELL, UG25ABV, INC_PCT_LO, PCT_BLACK, PCT_ASIAN, PCT_HISPANIC,PCT_BORN_US}
+
+F Pr(>F) = 0.6638 > 0.005
+Since ${\rm Pr}(>F) = 0.5658 > 0.05$, thus we failed to reject the null.
+
+Thus, l2 is a better model
+
+###2 l2 vs l3
+Full Model: l2
+
+Reduced Model: l3: *Removed {HSI,  PCTPELL， COSTT4_A }
+
+Since ${\rm Pr}(>F) = 0.1332 > 0.05$, thus we failed to reject the null.
+
+
+Thus, l3 is a better model. Therefore, we will be using model l3 with predictors {NUMBRANCH + CONTROL + AVGFACSAL + PFTFAC + PAR_ED_PCT_1STGEN + FEMALE + MD_FAMINC +  PCT_BA + PCT_GRAD_PROF + POVERTY_RATE + UNEMP_RATE + PCT_WHITE} as our final model
+
+## Final Model Checking
+
+**condition 1&2: From the plot of the response against the fitted values, we can see that two lines are fairly close, hence, condition1 holds. From the pairwise scatterplots, we can see that there are clear linear relationships between variables.Therefore, condition2 holds.
+
+
+
+```{r}
+# check condition 1 
+
+plot(data$ADM_RATE ~ fitted(l3), main="Y versus Y-hat", xlab="Y-hat", ylab="Y")
+abline(a = 0, b = 1)
+lines(lowess(data$ADM_RATE ~ fitted(l3)), lty=2)
+```
+
+```{r, fig.width=20, fig.height=20}
+
+# first check condition 2
+pairs(data_reduced[, c(1, 10, 11, 15, 16, 17, 18, 22, 23, 25, 26)])
+```
+
+
+## Check Model
+
+### Residual plot checking: Linearity, Constant Variance, Independency
+
+Check Final model l3:
+
+Residuals are randomly scattered and have no existing patterns and the qqnorm plot shows a straight diagonal string of points with minimal deviation at the ends. As well the histogram of residuals is normal.
+
+```{r, fig.width=10, fig.height=5}
+res = resid(l3)
+par(mfrow = c(1, 2))
+l3_predictors = data[,c('NUMBRANCH' , 'CONTROL' , 'COSTT4_A' , 'AVGFACSAL' , 'PAR_ED_PCT_1STGEN', 'PFTFAC' , 'FEMALE' , 'MD_FAMINC' , 'PCT_WHITE', 'PCT_BA' , 'PCT_GRAD_PROF', 'POVERTY_RATE', 'UNEMP_RATE' )]
+plot(res ~ fitted(l3), main = "Residual vs Fitted", xlab = "Fitted", ylab = "Residual")
+plot(res ~ l3_predictors$NUMBRANCH, main = "Residual vs NUMBRANCH", xlab = "NUMBRANCH", ylab = "Residual")
+plot(res ~ l3_predictors$CONTROL, main = "Residual vs CONTROL", xlab = "CONTROL", ylab = "Residual")
+plot(res ~ l3_predictors$AVGFACSAL, main = "Residual vs AVGFACSAL", xlab = "AVGFACSAL", ylab = "Residual")
+plot(res ~ l3_predictors$PFTFAC, main = "Residual vs PFTFAC", xlab = "PFTFAC", ylab = "Residual")
+plot(res ~ l3_predictors$PAR_ED_PCT_1STGEN, main = "Residual vs PAR_ED_PCT_1STGEN", xlab = "PAR_ED_PCT_1STGEN", ylab = "Residual")
+plot(res ~ l3_predictors$FEMALE, main = "Residual vs FEMALE", xlab = "FEMALE", ylab = "Residual")
+plot(res ~ l3_predictors$MD_FAMINC, main = "Residual vs MD_FAMINC", xlab = "MD_FAMINC", ylab = "Residual")
+plot(res ~ l3_predictors$PCT_WHITE, main = "Residual vs PCT_WHITE", xlab = "PCT_WHITE", ylab = "Residual")
+plot(res ~ l3_predictors$PCT_BA, main = "Residual vs PCT_BA", xlab = "PCT_BA", ylab = "Residual")
+plot(res ~ l3_predictors$PCT_GRAD_PROF, main = "Residual vs PCT_GRAD_PROF", xlab = "PCT_GRAD_PROF", ylab = "Residual")
+plot(res ~ l3_predictors$POVERTY_RATE, main = "Residual vs POVERTY_RATE", xlab = "POVERTY_RATE", ylab = "Residual")
+plot(res ~ l3_predictors$UNEMP_RATE, main = "Residual vs UNEMP_RATE", xlab = "UNEMP_RATE", ylab = "Residual")
+
+qqnorm(res)
+qqline(res)
+hist(res, main = "Histogram of Residuals")
+```
+
+With one unit increase of poverty rate, admission rate decreases by  -6.763e-03 units on average, when other predictors (factors) are held constant.
+
+
+
+
